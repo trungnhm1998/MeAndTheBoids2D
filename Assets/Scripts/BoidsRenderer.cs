@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
@@ -8,11 +9,16 @@ using UnityEngine;
 public class BoidsRenderer : MonoBehaviour
 {
     private static readonly int MainTex = Shader.PropertyToID("_MainTex");
+    private static readonly int MatricesBufferID = Shader.PropertyToID("_InstanceMatrices");
     public Mesh quadMesh;
     public Material instancedMaterial;
     public Texture2D spriteTexture;
-    private List<Matrix4x4[]> _batches = new();
     private EntityManager _entityManager;
+    
+    private ComputeBuffer _matricesBuffer;
+    private ComputeBuffer _argsBuffer;
+    private uint[] _args = new uint[5] { 0, 0, 0, 0, 0 };
+    private int _boidsCount;
 
     void Start()
     {
@@ -33,10 +39,12 @@ public class BoidsRenderer : MonoBehaviour
             new Vector2(1, 0)
         };
         quadMesh.triangles = new int[] { 0, 1, 2, 0, 2, 3 };
-        // quadMesh.RecalculateNormals();
-        // quadMesh.RecalculateBounds();
+        quadMesh.RecalculateNormals();
+        quadMesh.RecalculateBounds();
         instancedMaterial.SetTexture(MainTex, spriteTexture);
         instancedMaterial.enableInstancing = true;
+        
+        _argsBuffer = new ComputeBuffer(1, _args.Length * sizeof(uint), ComputeBufferType.IndirectArguments);
     }
 
     void Update()
@@ -47,16 +55,21 @@ public class BoidsRenderer : MonoBehaviour
     private void RenderBatches()
     {
         if (CreateBatches()) return;
-        foreach (var batch in _batches)
-        {
-            Graphics.DrawMeshInstanced(quadMesh, 0, instancedMaterial, batch);
-        }
+        
+        _args[0] = quadMesh.GetIndexCount(0);
+        _args[1] = (uint)_boidsCount;
+        _argsBuffer.SetData(_args);
+        
+        instancedMaterial.SetBuffer(MatricesBufferID, _matricesBuffer);
+        
+        Graphics.DrawMeshInstancedIndirect(quadMesh, 0, instancedMaterial, new Bounds(Vector3.zero, new Vector3(1000, 1000, 1000)), _argsBuffer);
     }
 
     private bool CreateBatches()
     {
         var boidEntities = new EntityQueryBuilder(Allocator.Temp).WithAll<Boid, LocalToWorld>().Build(_entityManager);
-        if (boidEntities.CalculateEntityCount() == 0)
+        _boidsCount = boidEntities.CalculateEntityCount();
+        if (_boidsCount == 0)
         {
             boidEntities.Dispose();
             return true;
@@ -74,20 +87,33 @@ public class BoidsRenderer : MonoBehaviour
         var handle = job.Schedule(boidEntitiesArray.Length, 50);
         handle.Complete();
 
-        _batches = new(nativeMatrices.Length / 1000);
-        
-        for (int i = 0; i < nativeMatrices.Length; i += 1000)
+        // create batches/compute buffer
+        if (_matricesBuffer == null || _matricesBuffer.count != _boidsCount)
         {
-            var batch = new Matrix4x4[Mathf.Min(1000, nativeMatrices.Length - i)];
-            nativeMatrices.Slice(i, batch.Length).CopyTo(batch);
-            _batches.Add(batch);
+            _matricesBuffer?.Release();
+            _matricesBuffer?.Dispose();
+            // each row has 4 floats x 4 col floats = 16 floats
+            // [ 16 floats per matrix ] * [ 4 bytes per float ] = 64 bytes per matrix
+            // 64 bytes per matrix * 4 matrices per boid = 256 bytes per boid
+            // 256 bytes per boid * 1000 boids = 256,000 bytes
+            // 256,000 bytes = 250 KB
+            _matricesBuffer = new ComputeBuffer(_boidsCount, 16 * 4);
         }
+        _matricesBuffer.SetData(nativeMatrices);
 
         localToWorlds.Dispose();
         nativeMatrices.Dispose();
         boidEntities.Dispose();
         boidEntitiesArray.Dispose();
         return false;
+    }
+
+    private void OnDestroy()
+    {
+        _matricesBuffer?.Release();
+        // _matricesBuffer?.Dispose();
+        _argsBuffer?.Release();
+        // _argsBuffer?.Dispose();
     }
 }
 

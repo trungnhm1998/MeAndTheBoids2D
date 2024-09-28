@@ -28,7 +28,6 @@
             {
                 float4 vertex : POSITION;
                 float2 uv : TEXCOORD0;
-                UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
             struct v2f
@@ -37,28 +36,32 @@
                 float2 uv : TEXCOORD0;
             };
 
-            UNITY_INSTANCING_BUFFER_START(PerInstanceData)
-                UNITY_DEFINE_INSTANCED_PROP(float4, _Color)
-            UNITY_INSTANCING_BUFFER_END(PerInstanceData)
+            StructuredBuffer<float4x4> _InstanceMatrices;
 
             sampler2D _MainTex;
 
-            v2f vert(appdata v)
+            v2f vert(appdata v, uint id : SV_InstanceID)
             {
                 v2f o;
-                UNITY_SETUP_INSTANCE_ID(v);
-                o.pos = UnityObjectToClipPos(v.vertex);
+                float4x4 instanceMatrix = _InstanceMatrices[id];
+                o.pos = UnityObjectToClipPos(mul(instanceMatrix, v.vertex));
+                
                 o.uv = v.uv;
                 return o;
             }
+            
+            CBUFFER_START( UnityPerMaterial )
+                half4 _Color;
+            CBUFFER_END
 
             fixed4 frag(v2f i) : SV_Target
             {
                 // Sample the texture using the UV coordinates
                 fixed4 texColor = tex2D(_MainTex, i.uv);
                 // Multiply the texture color by the instance color
-                fixed4 finalColor = texColor * UNITY_ACCESS_INSTANCED_PROP(PerInstanceData, _Color);
-                return finalColor;
+                // return texColor * _Color;
+                // texColor *= white
+                return texColor;
             }
             ENDCG
         }
