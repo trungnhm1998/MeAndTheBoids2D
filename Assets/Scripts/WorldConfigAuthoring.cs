@@ -33,7 +33,7 @@ public class WorldConfigAuthoring : MonoBehaviourGizmos
         Vector3 bottomLeft = transform.position + new Vector3(-_size.x / 2, -_size.y / 2, 0);
         Vector3 bottomRight = transform.position + new Vector3(_size.x / 2, -_size.y / 2, 0);
 
-        var draw = Draw.ingame.xy;
+        var draw = Draw.xy;
         draw.PushColor(Color.green);
         draw.Line(topLeft, topRight);
         draw.Line(topRight, bottomRight);
