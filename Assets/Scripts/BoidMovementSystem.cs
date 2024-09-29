@@ -6,6 +6,8 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Transforms;
 
+// [DisableAutoCreation]
+[BurstCompile]
 public partial struct BoidMovementSystem : ISystem
 {
     private EntityQuery _boidQuery;
@@ -14,7 +16,7 @@ public partial struct BoidMovementSystem : ISystem
     [BurstCompile]
     public void OnCreate(ref SystemState state)
     {
-        _boidQuery = SystemAPI.QueryBuilder().WithAll<Boid, LocalToWorld>().Build();
+        _boidQuery = SystemAPI.QueryBuilder().WithAll<Boid, LocalTransform>().Build();
         _quadTreeQuery = SystemAPI.QueryBuilder().WithAll<QuadTreeComponent>().Build();
 
         state.RequireForUpdate<Boid>();
@@ -26,6 +28,8 @@ public partial struct BoidMovementSystem : ISystem
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
+        if (_boidQuery.IsEmpty) return;
+        
         var boidConfig = SystemAPI.GetSingleton<BoidConfig>();
         var worldConfig = SystemAPI.GetSingleton<WorldConfig>();
         QuadTreeComponent quadTreeComponent;
@@ -45,8 +49,8 @@ public partial struct BoidMovementSystem : ISystem
         }
 
         var boidEntities = _boidQuery.ToEntityArray(state.WorldUpdateAllocator);
-        NativeArray<LocalToWorld> boidTransforms =
-            _boidQuery.ToComponentDataArray<LocalToWorld>(state.WorldUpdateAllocator);
+        NativeArray<LocalTransform> boidTransforms =
+            _boidQuery.ToComponentDataArray<LocalTransform>(state.WorldUpdateAllocator);
         NativeArray<Boid> boids = _boidQuery.ToComponentDataArray<Boid>(state.WorldUpdateAllocator);
 
         if (boidConfig.EnableBoid)
@@ -99,7 +103,7 @@ public partial struct BuildQuadTreeJob : IJob
     public NativeQuadtree<BoidWrapper> QuadTree;
     [ReadOnly] public NativeArray<Entity> BoidEntities;
     [ReadOnly] public NativeArray<Boid> Boids;
-    [ReadOnly] public NativeArray<LocalToWorld> BoidTransforms;
+    [ReadOnly] public NativeArray<LocalTransform> BoidTransforms;
 
     [BurstCompile]
     public void Execute()
@@ -139,11 +143,11 @@ public partial struct BoidJob : IJobEntity
 
     [ReadOnly] public NativeArray<Entity> BoidEntities;
     [ReadOnly] public NativeArray<Boid> Boids;
-    [ReadOnly] public NativeArray<LocalToWorld> BoidTransforms;
+    [ReadOnly] public NativeArray<LocalTransform> BoidTransforms;
     [ReadOnly] public NativeQuadtree<BoidWrapper> QuadTree;
 
     [BurstCompile]
-    public void Execute(Entity entity, ref Boid boid, ref LocalToWorld transform)
+    public void Execute(Entity entity, ref Boid boid, ref LocalTransform transform)
     {
         boid.Acceleration *= 0;
 
@@ -249,7 +253,7 @@ public partial struct MoveJob : IJobEntity
     public BoidConfig Config;
     public float MaxSpeed => Config.MaxSpeed;
 
-    void Execute(ref LocalToWorld transform, ref Boid boid)
+    void Execute(ref LocalTransform transform, ref Boid boid)
     {
         var position = transform.Position;
 
@@ -259,11 +263,8 @@ public partial struct MoveJob : IJobEntity
         var newPosition = position + boid.Velocity * DeltaTime;
         newPosition = TeleportWhenOutOfBound(newPosition);
 
-        var rotation = quaternion.RotateZ(math.atan2(boid.Velocity.y, boid.Velocity.x));
-        transform = new LocalToWorld
-        {
-            Value = float4x4.TRS(newPosition, rotation, 1)
-        };
+        transform.Position = newPosition;
+        transform.Rotation = quaternion.RotateZ(math.atan2(boid.Velocity.y, boid.Velocity.x));
 
         boid.Acceleration *= 0;
     }
