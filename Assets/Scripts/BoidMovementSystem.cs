@@ -33,7 +33,7 @@ public partial struct BoidMovementSystem : ISystem
             SystemAPI.TryGetSingletonEntity<QuadTreeComponent>(out var quadTreeEntity) == false)
         {
             var bounds = new AABB2D(worldConfig.BottomLeft, worldConfig.TopRight);
-            var qTree = new NativeQuadtree<Boid>(bounds, Allocator.Persistent);
+            var qTree = new NativeQuadtree<BoidWrapper>(bounds, Allocator.Persistent);
 
             quadTreeEntity = state.EntityManager.CreateEntity();
             quadTreeComponent = new QuadTreeComponent { Value = qTree };
@@ -48,27 +48,38 @@ public partial struct BoidMovementSystem : ISystem
         NativeArray<LocalToWorld> boidTransforms =
             _boidQuery.ToComponentDataArray<LocalToWorld>(state.WorldUpdateAllocator);
         NativeArray<Boid> boids = _boidQuery.ToComponentDataArray<Boid>(state.WorldUpdateAllocator);
+
+        if (boidConfig.EnableBoid)
+        {
+            state.Dependency = new BoidJob()
+            {
+                Config = boidConfig,
+                Boids = boids,
+                BoidTransforms = boidTransforms,
+                BoidEntities = boidEntities
+            }.ScheduleParallel(state.Dependency);
+        }
+
         state.Dependency = new MoveJob
         {
-            QuadTree = quadTreeComponent.Value,
-            Boids = boids,
-            BoidTransforms = boidTransforms,
-            BoidEntities = boidEntities,
             Bound = worldConfig.Bound,
             DeltaTime = SystemAPI.Time.DeltaTime,
-            Config = boidConfig
+            Config = boidConfig,
         }.ScheduleParallel(state.Dependency);
 
-        state.Dependency = new BuildQuadTreeJob
+        if (boidConfig.EnableBoid)
         {
-            Boids = boids,
-            BoidTransforms = boidTransforms,
-            QuadTree = quadTreeComponent.Value
-        }.Schedule(state.Dependency);
-
-        boidEntities.Dispose(state.Dependency);
-        boids.Dispose(state.Dependency);
-        boidTransforms.Dispose(state.Dependency);
+            state.Dependency = new BuildQuadTreeJob
+            {
+                Boids = boids,
+                BoidTransforms = boidTransforms,
+                QuadTree = quadTreeComponent.Value,
+            }.Schedule(state.Dependency);
+        }
+        
+        state.Dependency = boidEntities.Dispose(state.Dependency);
+        state.Dependency = boids.Dispose(state.Dependency);
+        state.Dependency = boidTransforms.Dispose(state.Dependency);
     }
 
     [BurstCompile]
@@ -83,7 +94,7 @@ public partial struct BoidMovementSystem : ISystem
 [BurstCompile]
 public partial struct BuildQuadTreeJob : IJob
 {
-    public NativeQuadtree<Boid> QuadTree;
+    public NativeQuadtree<BoidWrapper> QuadTree;
     [ReadOnly] public NativeArray<Boid> Boids;
     [ReadOnly] public NativeArray<LocalToWorld> BoidTransforms;
 
@@ -93,7 +104,108 @@ public partial struct BuildQuadTreeJob : IJob
         for (int i = 0; i < BoidTransforms.Length; i++)
         {
             var transform = BoidTransforms[i];
-            QuadTree.InsertPoint(Boids[i], new float2(transform.Position.x, transform.Position.y));
+            var boidWrapper = new BoidWrapper
+            {
+                Boid = Boids[i],
+                Position = new float3(transform.Position.x, transform.Position.y, 0)
+            };
+            QuadTree.InsertPoint(boidWrapper, new float2(transform.Position.x, transform.Position.y));
+        }
+    }
+}
+
+[BurstCompile]
+public partial struct BoidJob : IJobEntity
+{
+    public BoidConfig Config;
+
+    [ReadOnly] public NativeArray<Entity> BoidEntities;
+    [ReadOnly] public NativeArray<Boid> Boids;
+    [ReadOnly] public NativeArray<LocalToWorld> BoidTransforms;
+
+    [BurstCompile]
+    public void Execute(Entity entity, ref Boid boid, ref LocalToWorld transform)
+    {
+        boid.Acceleration *= 0;
+        CalculateSteeringForces(entity, BoidEntities, Boids, BoidTransforms, Config.PerceptionRadius,
+            transform.Position, ref boid,
+            out var separation, out var alignment,
+            out var cohesion, Config.MaxSpeed, Config.MaxSteeringForce);
+        boid.Acceleration += separation * Config.SeparationWeight;
+        boid.Acceleration += alignment * Config.AlignmentWeight;
+        boid.Acceleration += cohesion * Config.CohesionWeight;
+
+        if (math.any(!math.isfinite(boid.Acceleration))) boid.Acceleration = float3.zero;
+    }
+
+    [BurstCompile]
+    private static void CalculateSteeringForces(in Entity entity, in NativeArray<Entity> boidEntities,
+        in NativeArray<Boid> boids, in NativeArray<LocalToWorld> boidTransforms,
+        float perceptionRadius, in float3 position, ref Boid boid, out float3 separation, out float3 alignment,
+        out float3 cohesion, in float maxSpeed, in float maxSteeringForce)
+    {
+        separation = float3.zero;
+        alignment = float3.zero;
+        cohesion = float3.zero;
+
+        var separationCount = 0;
+        var alignmentCount = 0;
+        var cohesionCount = 0;
+
+        for (int i = 0; i < boids.Length; i++)
+        {
+            if (entity == boidEntities[i]) continue;
+            var otherBoid = boids[i];
+            var otherPosition = boidTransforms[i].Position;
+            var otherVelocity = otherBoid.Velocity;
+
+            var distance = math.length(otherPosition - position);
+
+            // Separation
+            if (distance < perceptionRadius && distance > 0)
+            {
+                separation += (position - otherPosition) / distance;
+                separationCount++;
+            }
+
+            // Alignment
+            if (distance < perceptionRadius)
+            {
+                alignment += otherVelocity;
+                alignmentCount++;
+            }
+
+            // Cohesion
+            if (distance < perceptionRadius)
+            {
+                cohesion += otherPosition;
+                cohesionCount++;
+            }
+        }
+
+        if (separationCount > 0)
+        {
+            separation /= separationCount;
+            separation = math.normalize(separation) * maxSpeed;
+            separation -= boid.Velocity;
+            separation = separation.Limit(maxSteeringForce);
+        }
+
+        if (alignmentCount > 0)
+        {
+            alignment /= alignmentCount;
+            alignment = math.normalize(alignment) * maxSpeed;
+            alignment -= boid.Velocity;
+            alignment = alignment.Limit(maxSteeringForce);
+        }
+
+        if (cohesionCount > 0)
+        {
+            cohesion /= cohesionCount;
+            cohesion -= position;
+            cohesion = math.normalize(cohesion) * maxSpeed;
+            cohesion -= boid.Velocity;
+            cohesion = cohesion.Limit(maxSteeringForce);
         }
     }
 }
@@ -105,30 +217,11 @@ public partial struct MoveJob : IJobEntity
     public float2 Bound;
 
     public BoidConfig Config;
-    public bool EnableBoid => Config.EnableBoid;
-    public float MaxSteeringForce => Config.MaxSteeringForce;
-    public float PerceptionRadius => Config.PerceptionRadius;
     public float MaxSpeed => Config.MaxSpeed;
-    
-    [ReadOnly] public NativeQuadtree<Boid> QuadTree;
-    [ReadOnly] public NativeArray<Boid> Boids;
-    [ReadOnly] public NativeArray<LocalToWorld> BoidTransforms;
-    [ReadOnly] public NativeArray<Entity> BoidEntities;
 
     void Execute(ref LocalToWorld transform, ref Boid boid)
     {
         var position = transform.Position;
-
-        if (EnableBoid)
-        {
-            boid.Acceleration *= 0;
-            CalculateSteeringForces(position, ref boid, out var separation, out var alignment, out var cohesion);
-            boid.Acceleration += separation * Config.SeparationWeight;
-            boid.Acceleration += alignment * Config.AlignmentWeight;
-            boid.Acceleration += cohesion * Config.CohesionWeight;
-
-            if (math.any(!math.isfinite(boid.Acceleration))) boid.Acceleration = float3.zero;
-        }
 
         boid.Velocity += boid.Acceleration;
         boid.Velocity = boid.Velocity.Limit(MaxSpeed);
@@ -144,105 +237,6 @@ public partial struct MoveJob : IJobEntity
 
         boid.Acceleration *= 0;
     }
-
-    private void CalculateSteeringForces(float3 position, ref Boid boid, out float3 separation, out float3 alignment,
-        out float3 cohesion)
-    {
-        separation = float3.zero;
-        alignment = float3.zero;
-        cohesion = float3.zero;
-
-        var separationCount = 0;
-        var alignmentCount = 0;
-        var cohesionCount = 0;
-
-        // var nearbyBoids = new NativeQueue<BoidWrapper>(Allocator.Temp);
-        // var set = new NativeParallelHashSet<int>(10, Allocator.Temp);
-        // var nearestTen = new NearestTen
-        // {
-        //     NearestEntities = nearbyBoids,
-        //     Set = set,
-        // };
-        // QuadTree.Nearest(new float2(position.x, position.y), Config.PerceptionRadius, ref nearestTen,
-        //     default(NativeQuadtreeExtensions.AABBDistanceSquaredProvider<BoidWrapper>));
-        //
-        // while (nearbyBoids.TryDequeue(out BoidWrapper other))
-        for (int i = 0; i < BoidEntities.Length; i++)
-        {
-            var otherBoid = Boids[i];
-            if (otherBoid.Id == boid.Id) continue;
-            var otherPosition = BoidTransforms[i].Position;
-            var otherVelocity = otherBoid.Velocity;
-
-            var distance = math.length(otherPosition - position);
-
-            // Separation
-            if (distance < PerceptionRadius && distance > 0)
-            {
-                separation += (position - otherPosition) / distance;
-                separationCount++;
-            }
-
-            // Alignment
-            if (distance < PerceptionRadius)
-            {
-                alignment += otherVelocity;
-                alignmentCount++;
-            }
-
-            // Cohesion
-            if (distance < PerceptionRadius)
-            {
-                cohesion += otherPosition;
-                cohesionCount++;
-            }
-        }
-
-        if (separationCount > 0)
-        {
-            separation /= separationCount;
-            separation = math.normalize(separation) * MaxSpeed;
-            // steer = desired - velocity
-            separation -= boid.Velocity;
-            separation = separation.Limit(MaxSteeringForce);
-        }
-
-        if (alignmentCount > 0)
-        {
-            alignment /= alignmentCount;
-            alignment = math.normalize(alignment) * MaxSpeed;
-            // steer = desired - velocity
-            alignment -= boid.Velocity;
-            alignment = alignment.Limit(MaxSteeringForce);
-        }
-
-        if (cohesionCount > 0)
-        {
-            cohesion /= cohesionCount;
-            cohesion -= position;
-            cohesion = math.normalize(cohesion) * MaxSpeed;
-            // steer = desired - velocity
-            cohesion -= boid.Velocity;
-            cohesion = cohesion.Limit(MaxSteeringForce);
-        }
-
-        // nearbyBoids.Dispose();
-        // set.Dispose();
-    }
-
-    private struct NearestTen : IQuadtreeNearestVisitor<BoidWrapper>
-    {
-        public NativeQueue<BoidWrapper> NearestEntities;
-        public NativeParallelHashSet<int> Set;
-
-        public bool OnVist(BoidWrapper entity)
-        {
-            if (Set.Add(entity.Boid.Id)) NearestEntities.Enqueue(entity);
-
-            return NearestEntities.Count < 10;
-        }
-    }
-
 
     private float3 TeleportWhenOutOfBound(float3 newPosition)
     {
@@ -260,7 +254,7 @@ public partial struct MoveJob : IJobEntity
 
 public struct QuadTreeComponent : IComponentData
 {
-    public NativeQuadtree<Boid> Value;
+    public NativeQuadtree<BoidWrapper> Value;
 }
 
 public struct BoidWrapper

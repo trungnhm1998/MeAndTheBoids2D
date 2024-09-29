@@ -21,7 +21,6 @@ public class BoidAuthoring : MonoBehaviour
 
 public struct Boid : IComponentData
 {
-    public int Id;
     public float3 Acceleration;
     public float3 Velocity;
 }

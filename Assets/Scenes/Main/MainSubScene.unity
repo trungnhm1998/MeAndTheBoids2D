@@ -176,13 +176,13 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   EnableBoid: 1
-  AlignmentWeight: 0.95
-  CohesionWeight: 0.68
-  SeparationWeight: 0.93
+  AlignmentWeight: 0
+  CohesionWeight: 0
+  SeparationWeight: 1
   FieldOfView: 1
-  MaxSpeed: 18.07
-  MaxSteeringForce: 2.43
-  PerceptionRadius: 4.43
+  MaxSpeed: 15
+  MaxSteeringForce: 2
+  PerceptionRadius: 2
   ShowPerceptionRadius: 0
 --- !u!1 &741978487
 GameObject:
@@ -228,7 +228,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e912ccbaa92f6e94fb985a4f5cffd7e4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  _size: {x: 50, y: 50}
+  _size: {x: 20, y: 20}
 --- !u!1 &1813301874
 GameObject:
   m_ObjectHideFlags: 0
