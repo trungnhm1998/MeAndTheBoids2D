@@ -16,13 +16,11 @@ public partial struct BoidSpawnerSystem : ISystem
         state.RequireForUpdate<WorldConfig>();
     }
 
-    private bool _initialized;
-
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
-        if (_initialized)
-            return;
+        var boidsQuery = SystemAPI.QueryBuilder().WithAll<Boid>().Build();
+        if (!boidsQuery.IsEmpty && !Input.GetKeyDown(KeyCode.Space)) return;
         var entityManager = state.EntityManager;
         var spawner = SystemAPI.GetSingleton<BoidSpawner>();
         var worldConfig = SystemAPI.GetSingleton<WorldConfig>();
@@ -36,6 +34,7 @@ public partial struct BoidSpawnerSystem : ISystem
 
         var jobHandle = new RandomizeBoidJob
         {
+            Seed = (uint)SystemAPI.Time.ElapsedTime,
             TopRight = topRight,
             BottomLeft = bottomLeft,
             SpeedRandomRange = spawner.SpeedRandomRange,
@@ -44,20 +43,22 @@ public partial struct BoidSpawnerSystem : ISystem
         }.Schedule(spawner.Count, 20);
         jobHandle.Complete();
 
-        for (int i = 0; i < spawner.Count; i++)
+        var instances = entityManager.Instantiate(spawner.Prefab, spawner.Count, Allocator.Temp);
+
+        var i = 0;
+        foreach (var entity in instances)
         {
             var velocity = randomVelocities[i];
             var position = randomPositions[i];
-            var entity = entityManager.Instantiate(spawner.Prefab);
             entityManager.SetComponentData(entity, new Boid { Velocity = randomVelocities[i] });
-            var rotation = quaternion.RotateZ(math.atan2(velocity.y, velocity.x));
-            entityManager.SetComponentData(entity,
-                new LocalToWorld() { Value = Matrix4x4.TRS(position, rotation, Vector3.one) });
+            var transform = SystemAPI.GetComponentRW<LocalTransform>(entity);
+            transform.ValueRW.Position = position;
+            transform.ValueRW.Rotation = quaternion.RotateZ(math.atan2(velocity.y, velocity.x));
+            i++;
         }
 
         state.Dependency = randomVelocities.Dispose(state.Dependency);
         state.Dependency = randomPositions.Dispose(state.Dependency);
-        _initialized = true;
     }
 
     [BurstCompile]
@@ -72,10 +73,11 @@ public partial struct RandomizeBoidJob : IJobParallelFor
     public float3 TopRight;
     public float3 BottomLeft;
     public float2 SpeedRandomRange;
+    public uint Seed;
 
     public void Execute(int index)
     {
-        var random = Random.CreateFromIndex((uint)index);
+        var random = Random.CreateFromIndex((uint)(Seed + index));
         var speed = random.NextFloat(SpeedRandomRange.x, SpeedRandomRange.y);
         var velocity = math.normalize(new float3(random.NextFloat(-1f, 1f), random.NextFloat(-1f, 1f), 0)) * speed;
         var position = new float3(random.NextFloat(BottomLeft.x, TopRight.x),
