@@ -1,17 +1,22 @@
-﻿using Unity.Burst;
+﻿using NativeTrees;
+using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Transforms;
 
 public partial struct BoidMovementSystem : ISystem
 {
     private EntityQuery _boidQuery;
+    private EntityQuery _quadTreeQuery;
 
     [BurstCompile]
     public void OnCreate(ref SystemState state)
     {
         _boidQuery = SystemAPI.QueryBuilder().WithAll<Boid, LocalToWorld>().Build();
+        _quadTreeQuery = SystemAPI.QueryBuilder().WithAll<QuadTreeComponent>().Build();
+
         state.RequireForUpdate<Boid>();
         state.RequireForUpdate<BoidConfig>();
         state.RequireForUpdate<WorldConfig>();
@@ -23,43 +28,74 @@ public partial struct BoidMovementSystem : ISystem
     {
         var boidConfig = SystemAPI.GetSingleton<BoidConfig>();
         var worldConfig = SystemAPI.GetSingleton<WorldConfig>();
+        QuadTreeComponent quadTreeComponent;
+        if (_quadTreeQuery.CalculateEntityCount() == 0 ||
+            SystemAPI.TryGetSingletonEntity<QuadTreeComponent>(out var quadTreeEntity) == false)
+        {
+            var bounds = new AABB2D(worldConfig.BottomLeft, worldConfig.TopRight);
+            var qTree = new NativeQuadtree<Boid>(bounds, Allocator.Persistent);
+
+            quadTreeEntity = state.EntityManager.CreateEntity();
+            quadTreeComponent = new QuadTreeComponent { Value = qTree };
+            state.EntityManager.AddComponentData(quadTreeEntity, quadTreeComponent);
+        }
+        else
+        {
+            quadTreeComponent = state.EntityManager.GetComponentData<QuadTreeComponent>(quadTreeEntity);
+        }
 
         var boidEntities = _boidQuery.ToEntityArray(state.WorldUpdateAllocator);
         NativeArray<LocalToWorld> boidTransforms =
             _boidQuery.ToComponentDataArray<LocalToWorld>(state.WorldUpdateAllocator);
         NativeArray<Boid> boids = _boidQuery.ToComponentDataArray<Boid>(state.WorldUpdateAllocator);
-
-        var movementJob = new MoveJob
+        state.Dependency = new MoveJob
         {
+            QuadTree = quadTreeComponent.Value,
             Boids = boids,
+            BoidTransforms = boidTransforms,
             BoidEntities = boidEntities,
-            BoidsTransform = boidTransforms,
             Bound = worldConfig.Bound,
             DeltaTime = SystemAPI.Time.DeltaTime,
             Config = boidConfig
-        };
-        state.Dependency = movementJob.ScheduleParallel(state.Dependency);
+        }.ScheduleParallel(state.Dependency);
 
-        // var commandBuilder = DrawingManager.GetBuilder(true);
-        // var visualizeJob = new VisualizeJob
-        // {
-        //     Builder = commandBuilder,
-        //     ShowPerceptionRadius = boidConfig.ShowPerceptionRadius,
-        //     PerceptionRadius = boidConfig.PerceptionRadius,
-        //     FoV = boidConfig.FieldOfView
-        // };
-        // state.Dependency = visualizeJob.Schedule(state.Dependency);
-        // commandBuilder.DisposeAfter(state.Dependency);
+        state.Dependency = new BuildQuadTreeJob
+        {
+            Boids = boids,
+            BoidTransforms = boidTransforms,
+            QuadTree = quadTreeComponent.Value
+        }.Schedule(state.Dependency);
 
-        // state.Dependency.Complete();
-
-        boids.Dispose(state.Dependency);
         boidEntities.Dispose(state.Dependency);
+        boids.Dispose(state.Dependency);
         boidTransforms.Dispose(state.Dependency);
     }
 
     [BurstCompile]
-    public void OnDestroy(ref SystemState state) { }
+    public void OnDestroy(ref SystemState state)
+    {
+        var quadTreeEntity = SystemAPI.GetSingletonEntity<QuadTreeComponent>();
+        var quadTreeComponent = state.EntityManager.GetComponentData<QuadTreeComponent>(quadTreeEntity);
+        quadTreeComponent.Value.Dispose();
+    }
+}
+
+[BurstCompile]
+public partial struct BuildQuadTreeJob : IJob
+{
+    public NativeQuadtree<Boid> QuadTree;
+    [ReadOnly] public NativeArray<Boid> Boids;
+    [ReadOnly] public NativeArray<LocalToWorld> BoidTransforms;
+
+    public void Execute()
+    {
+        QuadTree.Clear();
+        for (int i = 0; i < BoidTransforms.Length; i++)
+        {
+            var transform = BoidTransforms[i];
+            QuadTree.InsertPoint(Boids[i], new float2(transform.Position.x, transform.Position.y));
+        }
+    }
 }
 
 [BurstCompile]
@@ -68,20 +104,19 @@ public partial struct MoveJob : IJobEntity
     public float DeltaTime;
     public float2 Bound;
 
-    [ReadOnly] public NativeArray<Entity> BoidEntities;
-    [ReadOnly] public NativeArray<LocalToWorld> BoidsTransform;
-    [ReadOnly] public NativeArray<Boid> Boids;
-
-    private Entity _entity;
     public BoidConfig Config;
     public bool EnableBoid => Config.EnableBoid;
     public float MaxSteeringForce => Config.MaxSteeringForce;
     public float PerceptionRadius => Config.PerceptionRadius;
     public float MaxSpeed => Config.MaxSpeed;
+    
+    [ReadOnly] public NativeQuadtree<Boid> QuadTree;
+    [ReadOnly] public NativeArray<Boid> Boids;
+    [ReadOnly] public NativeArray<LocalToWorld> BoidTransforms;
+    [ReadOnly] public NativeArray<Entity> BoidEntities;
 
-    void Execute(Entity entity, ref LocalToWorld transform, ref Boid boid)
+    void Execute(ref LocalToWorld transform, ref Boid boid)
     {
-        _entity = entity;
         var position = transform.Position;
 
         if (EnableBoid)
@@ -91,10 +126,10 @@ public partial struct MoveJob : IJobEntity
             boid.Acceleration += separation * Config.SeparationWeight;
             boid.Acceleration += alignment * Config.AlignmentWeight;
             boid.Acceleration += cohesion * Config.CohesionWeight;
-            
+
             if (math.any(!math.isfinite(boid.Acceleration))) boid.Acceleration = float3.zero;
         }
-        
+
         boid.Velocity += boid.Acceleration;
         boid.Velocity = boid.Velocity.Limit(MaxSpeed);
 
@@ -106,6 +141,7 @@ public partial struct MoveJob : IJobEntity
         {
             Value = float4x4.TRS(newPosition, rotation, 1)
         };
+
         boid.Acceleration *= 0;
     }
 
@@ -120,12 +156,22 @@ public partial struct MoveJob : IJobEntity
         var alignmentCount = 0;
         var cohesionCount = 0;
 
+        // var nearbyBoids = new NativeQueue<BoidWrapper>(Allocator.Temp);
+        // var set = new NativeParallelHashSet<int>(10, Allocator.Temp);
+        // var nearestTen = new NearestTen
+        // {
+        //     NearestEntities = nearbyBoids,
+        //     Set = set,
+        // };
+        // QuadTree.Nearest(new float2(position.x, position.y), Config.PerceptionRadius, ref nearestTen,
+        //     default(NativeQuadtreeExtensions.AABBDistanceSquaredProvider<BoidWrapper>));
+        //
+        // while (nearbyBoids.TryDequeue(out BoidWrapper other))
         for (int i = 0; i < BoidEntities.Length; i++)
         {
-            var otherBoidEntity = BoidEntities[i];
-            if (otherBoidEntity == _entity) continue;
             var otherBoid = Boids[i];
-            var otherPosition = BoidsTransform[i].Position;
+            if (otherBoid.Id == boid.Id) continue;
+            var otherPosition = BoidTransforms[i].Position;
             var otherVelocity = otherBoid.Velocity;
 
             var distance = math.length(otherPosition - position);
@@ -179,6 +225,22 @@ public partial struct MoveJob : IJobEntity
             cohesion -= boid.Velocity;
             cohesion = cohesion.Limit(MaxSteeringForce);
         }
+
+        // nearbyBoids.Dispose();
+        // set.Dispose();
+    }
+
+    private struct NearestTen : IQuadtreeNearestVisitor<BoidWrapper>
+    {
+        public NativeQueue<BoidWrapper> NearestEntities;
+        public NativeParallelHashSet<int> Set;
+
+        public bool OnVist(BoidWrapper entity)
+        {
+            if (Set.Add(entity.Boid.Id)) NearestEntities.Enqueue(entity);
+
+            return NearestEntities.Count < 10;
+        }
     }
 
 
@@ -196,25 +258,13 @@ public partial struct MoveJob : IJobEntity
     }
 }
 
-// [BurstCompile]
-// public partial struct VisualizeJob : IJobEntity
-// {
-//     public CommandBuilder Builder;
-//     public bool ShowPerceptionRadius;
-//     public float PerceptionRadius;
-//     public float FoV;
-//
-//     public void Execute(in LocalToWorld transform, ref Boid boid)
-//     {
-//         // Builder.xy.Arrowhead(transform.Position, boid.Velocity, .1f, color: Color.white);
-//         // Builder.xy.SolidCircle(transform.Position, .1f, Color.white);
-//         // Builder.xy.SolidTriangle(transform.Position, math.normalize(boid.Velocity), .25f, Color.white);
-//         
-//         // draw a SolidArc to visualize the field of view
-//         // Builder.xy.SolidArc(transform.Position, boid.Velocity, FoV, PerceptionRadius, Color.red);
-//         if (ShowPerceptionRadius)
-//         {
-//             Builder.xy.Circle(transform.Position, PerceptionRadius, Color.green);
-//         }
-//     }
-// }
+public struct QuadTreeComponent : IComponentData
+{
+    public NativeQuadtree<Boid> Value;
+}
+
+public struct BoidWrapper
+{
+    public Boid Boid;
+    public float3 Position;
+}

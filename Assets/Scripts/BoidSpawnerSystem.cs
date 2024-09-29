@@ -10,15 +10,19 @@ public partial struct BoidSpawnerSystem : ISystem
     [BurstCompile]
     public void OnCreate(ref SystemState state)
     {
+        var entityManager = state.EntityManager;
+        var progressEntity = entityManager.CreateEntity(typeof(SpawningProgress));
+        entityManager.SetComponentData(progressEntity, new SpawningProgress { Value = 0 });
+        
+        state.RequireForUpdate<SpawningProgress>();
         state.RequireForUpdate<BoidSpawner>();
         state.RequireForUpdate<WorldConfig>();
     }
 
-
     [BurstCompile]
     public void OnUpdate(ref SystemState state)
     {
-        if (SystemAPI.HasSingleton<SpawnerExecuted>()) return;
+        var entityManager = state.EntityManager;
         var spawner = SystemAPI.GetSingleton<BoidSpawner>();
         var worldConfig = SystemAPI.GetSingleton<WorldConfig>();
 
@@ -28,28 +32,53 @@ public partial struct BoidSpawnerSystem : ISystem
 
         var commandBuffer = new EntityCommandBuffer(Allocator.TempJob);
 
-        // var positions = new NativeArray<float3>(spawner.Count, Allocator.TempJob);
-        // var velocities = new NativeArray<float3>(spawner.Count, Allocator.TempJob);
+        var progressEntity = SystemAPI.GetSingletonEntity<SpawningProgress>();
+        var progress = entityManager.GetComponentData<SpawningProgress>(progressEntity);
 
-        var job = new RandomizeBoidJob
+        int remaining = spawner.Count - progress.Value;
+        int spawnThisFrame = math.min(remaining, spawner.SpawnPerFrame);
+
+        if (spawnThisFrame > 0)
         {
-            CommandBuffer = commandBuffer.AsParallelWriter(),
-            // Positions = positions,
-            // Velocities = velocities,
-            Prefab = spawner.Prefab,
-            TopRight = topRight,
-            BottomLeft = bottomLeft,
-            SpeedRandomRange = spawner.SpeedRandomRange
-        };
+            var job = new RandomizeBoidJob
+            {
+                CommandBuffer = commandBuffer.AsParallelWriter(),
+                Prefab = spawner.Prefab,
+                TopRight = topRight,
+                BottomLeft = bottomLeft,
+                SpeedRandomRange = spawner.SpeedRandomRange
+            };
 
-        var handle = job.Schedule(spawner.Count, 50);
-        handle.Complete();
+            var handle = job.Schedule(spawner.Count, 1);
+            handle.Complete();
 
-        commandBuffer.Playback(state.EntityManager);
+            commandBuffer.Playback(state.EntityManager);
+            progress.Value += spawnThisFrame;
+        }
+        
+        if (remaining < 0)
+        {
+            // Destroy excess entities
+            var excessCount = -remaining;
+            var boidQuery = entityManager.CreateEntityQuery(typeof(Boid));
+            var boidEntities = boidQuery.ToEntityArray(Allocator.TempJob);
+
+            for (int i = 0; i < excessCount && i < boidEntities.Length; i++)
+            {
+                entityManager.DestroyEntity(boidEntities[i]);
+                progress.Value--;
+            }
+
+            boidEntities.Dispose();
+        }
+
         commandBuffer.Dispose();
-        // positions.Dispose();
-        // velocities.Dispose();
-        state.EntityManager.AddComponent<SpawnerExecuted>(state.SystemHandle);
+
+        entityManager.SetComponentData(progressEntity, progress);
+        // if (progress.Value >= spawner.Count)
+        // {
+        //     entityManager.DestroyEntity(progressEntity);
+        // }
     }
 
     [BurstCompile]
@@ -81,4 +110,7 @@ public partial struct RandomizeBoidJob : IJobParallelFor
     }
 }
 
-public struct SpawnerExecuted : IComponentData { }
+public struct SpawningProgress : IComponentData
+{
+    public int Value;
+}

@@ -1,4 +1,3 @@
-using System;
 using Drawing;
 using Unity.Entities;
 using Unity.Mathematics;
@@ -7,6 +6,12 @@ using UnityEngine;
 public class WorldConfigAuthoring : MonoBehaviourGizmos
 {
     [SerializeField] private Vector2 _size = new(100, 100);
+    public Vector2 Size => _size;
+    public Vector2 Bounds => _size;
+    public Vector2 BottomLeft => new Vector2(transform.position.x, transform.position.y) - _size / 2;
+    public Vector2 TopRight => new Vector2(transform.position.x, transform.position.y) + _size / 2;
+    public Vector2 TopLeft => new Vector2(transform.position.x, transform.position.y) + new Vector2(-_size.x / 2, _size.y / 2);
+    public Vector2 BottomRight => new Vector2(transform.position.x, transform.position.y) + new Vector2(_size.x / 2, -_size.y / 2);
 
     private void Start()
     {
@@ -46,4 +51,6 @@ public class WorldConfigAuthoring : MonoBehaviourGizmos
 public struct WorldConfig : IComponentData
 {
     public float2 Bound;
+    public float2 BottomLeft => new float2(-Bound.x / 2, -Bound.y / 2);
+    public float2 TopRight => new float2(Bound.x / 2, Bound.y / 2);
 }

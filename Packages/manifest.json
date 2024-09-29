@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "com.bartofzo.nativetrees": "https://github.com/bartofzo/NativeTrees.git?path=/Packages/NativeTrees",
     "com.unity.burst": "1.8.17",
     "com.unity.collab-proxy": "2.5.2",
     "com.unity.collections": "2.4.3",
