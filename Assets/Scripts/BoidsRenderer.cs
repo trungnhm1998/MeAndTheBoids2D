@@ -1,5 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
+﻿using Unity.Burst;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Jobs;
@@ -117,11 +116,13 @@ public class BoidsRenderer : MonoBehaviour
     }
 }
 
+[BurstCompile]
 struct CalculateMatricesJob : IJobParallelFor
 {
     [ReadOnly] public NativeArray<LocalToWorld> LocalToWorlds;
     public NativeArray<Matrix4x4> Matrices;
 
+    [BurstCompile]
     public void Execute(int index)
     {
         LocalToWorld transform = LocalToWorlds[index];
