@@ -175,14 +175,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7bb3a6baac2a452ebb6a8e95768c69b8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  EnableBoid: 0
-  AlignmentWeight: 0.55
-  CohesionWeight: 0.41
-  SeparationWeight: 1.15
+  EnableBoid: 1
+  AlignmentWeight: 1.36
+  CohesionWeight: 0.53
+  SeparationWeight: 0.7789939
   FieldOfView: 1
-  MaxSpeed: 11.5
+  MaxSpeed: 13.1
   MaxSteeringForce: 2.13
-  PerceptionRadius: 1.13
+  PerceptionRadius: 0.52
   ShowPerceptionRadius: 0
 --- !u!1 &741978487
 GameObject:
@@ -228,7 +228,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e912ccbaa92f6e94fb985a4f5cffd7e4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  _size: {x: 50, y: 50}
+  _size: {x: 10, y: 10}
 --- !u!1 &1813301874
 GameObject:
   m_ObjectHideFlags: 0
@@ -273,9 +273,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6790fdf8ea0245a693b8e52ef3b52ce6, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  _spawnPerFrame: 10
   _boidPrefab: {fileID: 2079804689312474029, guid: ae75abf12537f044388c846669bd3f19, type: 3}
-  _boidCount: 10000
+  _boidCount: 100
   RandomSpeedRange: {x: 5, y: 15}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
